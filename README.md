@@ -32,5 +32,5 @@ The model is designed to navigate the complex real estate landscape of NYC by fo
 ├── train_model.py        # Local training script for development
 ├── requirements.txt      # Python dependencies
 ├── .gitignore            # Excludes large binaries and temp files
-├── nyc_housing_base.csv  # Processed NYC property dataset
-└── models/               # Model storage (generated on-the-fly in cloud)
+└── nyc_housing_base.csv  # Processed NYC property dataset
+          

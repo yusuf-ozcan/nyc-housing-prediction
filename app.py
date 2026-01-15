@@ -149,3 +149,4 @@ st.sidebar.info("""
 - **Features:** Geospatial & Physical
 - **Deployment:** Cloud Auto-Train
 """)
+# yusufozcan.space | GitHub.com/yusuf-ozcan 

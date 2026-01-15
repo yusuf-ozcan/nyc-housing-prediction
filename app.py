@@ -9,68 +9,71 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
-# 1. PAGE CONFIGURATION (Must be at the top)
+# 1. PAGE CONFIGURATION
 st.set_page_config(
     page_title="NYC AI Market Value Estimator", 
     layout="wide", 
     page_icon="🏙️"
 )
 
-# --- 2. AUTOMATIC MODEL TRAINING ENGINE ---
-# Since .pkl files over 100MB are blocked by GitHub, 
-# this function trains the model on the cloud if it's missing.
-@st.cache_resource
+# --- 2. AUTOMATIC MODEL TRAINING ENGINE (Optimized) ---
+@st.cache_resource(show_spinner="Predictor engine is warming up... This may take a minute.")
 def load_or_train_model():
     model_path = 'models/nyc_house_model.pkl'
     data_path = 'nyc_housing_base.csv'
     
+    # Ensure directory exists
+    if not os.path.exists('models'):
+        os.makedirs('models')
+    
+    # Training logic if model file is missing
     if not os.path.exists(model_path):
         if not os.path.exists(data_path):
-            st.error(f"⚠️ Critical Error: '{data_path}' not found! Please upload the dataset to GitHub.")
+            st.error(f"⚠️ Critical Error: '{data_path}' not found!")
             st.stop()
             
-        with st.status("🔄 Model not found. Training on cloud, please wait...", expanded=True) as status:
-            df = pd.read_csv(data_path)
-            
-            # Data Cleaning
-            df = df[df['sale_price'] > 10000] # Filter symbolic sales
-            df['area_per_unit'] = (df['bldgarea'] / (df['unitsres'] + 1)).clip(upper=5000)
-            df['landuse'] = df['landuse'].astype(str)
-            df['borough_y'] = df['borough_y'].astype(str)
-            
-            target = 'sale_price'
-            df = df.dropna(subset=[target, 'latitude', 'longitude'])
-            y = np.log1p(df[target]) # Log transformation for skewed pricing
-            
-            features = ['borough_y', 'lotarea', 'bldgarea', 'numfloors', 
-                        'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit']
-            X = df[features]
-            
-            # Machine Learning Pipeline
-            numeric_features = ['lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'latitude', 'longitude', 'area_per_unit']
-            categorical_features = ['borough_y', 'landuse']
-            
-            preprocessor = ColumnTransformer(transformers=[
-                ('num', Pipeline(steps=[('imputer', SimpleImputer(strategy='median'))]), numeric_features),
-                ('cat', Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))]), categorical_features)
-            ])
-            
-            model = Pipeline(steps=[
-                ('preprocessor', preprocessor),
-                ('regressor', RandomForestRegressor(n_estimators=100, max_depth=15, random_state=42, n_jobs=-1))
-            ])
-            
-            model.fit(X, y)
-            
-            if not os.path.exists('models'): 
-                os.makedirs('models')
-                
-            joblib.dump(model, model_path)
-            status.update(label="✅ Model trained and ready!", state="complete")
-    
+        df = pd.read_csv(data_path)
+        
+        # Data Cleaning & Feature Engineering
+        df = df[df['sale_price'] > 10000]
+        df['area_per_unit'] = (df['bldgarea'] / (df['unitsres'] + 1)).clip(upper=5000)
+        df['landuse'] = df['landuse'].astype(str)
+        df['borough_y'] = df['borough_y'].astype(str)
+        
+        target = 'sale_price'
+        df = df.dropna(subset=[target, 'latitude', 'longitude'])
+        y = np.log1p(df[target]) 
+        
+        features = ['borough_y', 'lotarea', 'bldgarea', 'numfloors', 
+                    'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit']
+        X = df[features]
+        
+        # ML Pipeline
+        numeric_features = ['lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'latitude', 'longitude', 'area_per_unit']
+        categorical_features = ['borough_y', 'landuse']
+        
+        preprocessor = ColumnTransformer(transformers=[
+            ('num', Pipeline(steps=[('imputer', SimpleImputer(strategy='median'))]), numeric_features),
+            ('cat', Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))]), categorical_features)
+        ])
+        
+        # REDUCED PARAMETERS TO PREVENT RAM CRASHES
+        model = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('regressor', RandomForestRegressor(
+                n_estimators=50,   # Lowered from 100
+                max_depth=10,      # Lowered from 15
+                random_state=42, 
+                n_jobs=-1
+            ))
+        ])
+        
+        model.fit(X, y)
+        joblib.dump(model, model_path)
+        
     return joblib.load(model_path)
 
-# Load the model
+# Load/Train the model once and keep in memory
 model = load_or_train_model()
 
 # --- 3. UI DESIGN ---
@@ -92,7 +95,6 @@ with col1:
     st.subheader("📍 Location & Property Type")
     selected_b_name = st.selectbox("Select Borough", list(BOROUGH_MAP.keys()))
     
-    # Auto-sync coordinates
     default_lat = BOROUGH_MAP[selected_b_name]["lat"]
     default_lon = BOROUGH_MAP[selected_b_name]["lon"]
     b_code = BOROUGH_MAP[selected_b_name]["code"]
@@ -109,44 +111,35 @@ with col2:
     bldg_area = st.number_input("Building Area (sqft)", value=2200, min_value=10)
     lot_area = st.number_input("Lot Area (sqft)", value=2500, min_value=10)
     
-    # Logic: Residential use must have at least 1 unit
     min_u = 1 if land_use in [1, 2] else 0
     units = st.number_input("Residential Units", min_value=min_u, value=max(1, min_u))
     
     floors = st.slider("Number of Floors", 1, 120, 2)
     age = st.slider("Building Age (Years)", 0, 250, 45)
 
-# Feature Engineering for Inference
 area_per_unit = bldg_area / (units + 1)
 area_per_unit_clipped = min(area_per_unit, 5000.0)
 
 st.divider()
 
 if st.button("🚀 Calculate Estimated Value", type="primary"):
-    # Prepare input for model
     input_data = pd.DataFrame([[
         b_code, lot_area, bldg_area, floors, units, age, str(float(land_use)), u_lat, u_lon, area_per_unit_clipped
     ]], columns=['borough_y', 'lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit'])
     
-    # Predict and reverse Log transformation
     log_pred = model.predict(input_data)[0]
     final_price = np.expm1(log_pred)
     
     st.success(f"### Estimated Market Value: ${final_price:,.2f}")
     
-    # KPIs
     res_col1, res_col2 = st.columns(2)
     res_col1.metric("Price per SqFt", f"${(final_price/bldg_area):,.2f}")
     res_col2.metric("Efficiency Ratio", f"{area_per_unit_clipped:.0f} sqft/unit")
-
-    if area_per_unit > 5000:
-        st.warning("Note: Structural specs were clipped for model safety (extreme density detected).")
 
 st.sidebar.markdown("### ℹ️ Model Insights")
 st.sidebar.info("""
 - **Algorithm:** Random Forest Regressor
 - **Optimization:** Log-Scaled Target
 - **Features:** Geospatial & Physical
-- **Deployment:** Cloud Auto-Train
+- **Portfolio:** [yusufozcan.space](https://yusufozcan.space)
 """)
-# yusufozcan.space | GitHub.com/yusuf-ozcan 

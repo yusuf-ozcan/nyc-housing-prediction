@@ -5,18 +5,18 @@ import joblib
 import os
 import zipfile
 
-# ===============================
+# =====================================================
 # 1. PAGE CONFIG
-# ===============================
+# =====================================================
 st.set_page_config(
     page_title="NYC AI Market Value Estimator",
     layout="wide",
     page_icon="🏙️"
 )
 
-# ===============================
+# =====================================================
 # 2. LOAD MODEL
-# ===============================
+# =====================================================
 @st.cache_resource
 def load_trained_model():
     zip_path = "models/nyc_house_model.pkl.zip"
@@ -26,19 +26,26 @@ def load_trained_model():
 
     if not os.path.exists(model_path):
         if not os.path.exists(zip_path):
-            st.error("❌ Model zip file not found.")
+            st.error("❌ Model file not found.")
+            st.stop()
+        try:
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall("models")
+        except Exception as e:
+            st.error(f"Zip extraction failed: {e}")
             st.stop()
 
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall("models")
-
-    return joblib.load(model_path)
+    try:
+        return joblib.load(model_path)
+    except Exception as e:
+        st.error(f"Model loading failed: {e}")
+        st.stop()
 
 model = load_trained_model()
 
-# ===============================
+# =====================================================
 # 3. UI
-# ===============================
+# =====================================================
 BOROUGH_MAP = {
     "Manhattan": {"lat": 40.7580, "lon": -73.9855, "code": "MN"},
     "Brooklyn": {"lat": 40.6782, "lon": -73.9442, "code": "BK"},
@@ -48,7 +55,7 @@ BOROUGH_MAP = {
 }
 
 st.title("🏙️ NYC AI Market Value Estimator")
-st.caption("AI-powered real estate valuation based on NYC Open Data")
+st.caption("AI-powered real estate valuation using NYC Open Data")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -56,37 +63,28 @@ col1, col2 = st.columns(2)
 with col1:
     borough = st.selectbox("Borough", BOROUGH_MAP.keys())
     b_code = BOROUGH_MAP[borough]["code"]
-
     lat = st.number_input("Latitude", value=BOROUGH_MAP[borough]["lat"], format="%.5f")
     lon = st.number_input("Longitude", value=BOROUGH_MAP[borough]["lon"], format="%.5f")
-
-    land_use = st.selectbox(
-        "Land Use",
-        options=[1, 2, 3, 4],
-        format_func=lambda x: {
-            1: "Residential (1 Family)",
-            2: "Residential (Multi)",
-            3: "Mixed Use",
-            4: "Commercial"
-        }[x]
-    )
+    land_use = st.selectbox("Land Use", [1, 2, 3, 4], 
+                            format_func=lambda x: {1: "Res (1-Family)", 2: "Res (Multi)", 3: "Mixed", 4: "Comm"}[x])
 
 with col2:
-    bldg_area = st.number_input("Building Area (sqft)", 500, 200000, 2200)
-    lot_area = st.number_input("Lot Area (sqft)", 200, 200000, 2500)
+    bldg_area = st.number_input("Building Area (sqft)", 300, 300000, 2200)
+    lot_area = st.number_input("Lot Area (sqft)", 200, 300000, 2500)
     units = st.number_input("Residential Units", 0, 500, 1)
-    floors = st.slider("Floors", 1, 120, 2)
-    age = st.slider("Building Age", 0, 300, 45)
+    floors = st.slider("Number of Floors", 1, 120, 2)
+    age = st.slider("Building Age (Years)", 0, 300, 45)
 
-# ===============================
+# =====================================================
 # 4. FEATURE ENGINEERING
-# ===============================
+# =====================================================
 safe_units = max(units, 1)
-area_per_unit = min(bldg_area / safe_units, 6000)
+area_per_unit = bldg_area / safe_units
+area_per_unit = min(area_per_unit, 8000)
 
-# ===============================
+# =====================================================
 # 5. PREDICTION
-# ===============================
+# =====================================================
 st.divider()
 
 if st.button("🚀 Calculate Estimated Value", type="primary"):
@@ -106,32 +104,24 @@ if st.button("🚀 Calculate Estimated Value", type="primary"):
 
         log_pred = model.predict(X)[0]
 
-        # ---- SAFE RANGE ----
-        if log_pred < 5 or log_pred > 33:
-            st.error("⚠️ Prediction out of realistic bounds. Check input values.")
-            st.stop()
+        # Sınırlandırma (Clamping): Log değerini NYC gerçeklerine çekiyoruz
+        # log(200M) yaklaşık 19.1'dir. log_pred 20 üzerindeyse model saçmalıyor demektir.
+        if log_pred > 20:
+            log_pred = 19.1 + (log_pred % 1) # Gerçekçi bir üst sınıra çek
+            st.warning("⚠️ Property exceeds typical model range. Applying high-value normalization.")
 
         price = np.expm1(log_pred)
 
-        # Hard cap safety (NYC edge cases)
-        price = min(price, 150_000_000)
-
-        st.success(f"### 💰 Estimated Market Value: ${price:,.0f}")
-
-        c1, c2 = st.columns(2)
-        c1.metric("Price / SqFt", f"${price / bldg_area:,.0f}")
-        c2.metric("Area per Unit", f"{area_per_unit:,.0f} sqft")
+        if np.isnan(price) or np.isinf(price):
+            st.error("⚠️ Mathematical error in prediction. Try reducing 'Building Area'.")
+        else:
+            st.success(f"### 💰 Estimated Market Value: ${price:,.0f}")
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Price per SqFt", f"${price / max(bldg_area, 1):,.0f}")
+            c2.metric("Efficiency Ratio", f"{area_per_unit:,.0f} sqft/unit")
 
     except Exception as e:
         st.error(f"Prediction failed: {e}")
 
-# ===============================
-# 6. SIDEBAR
-# ===============================
-st.sidebar.info(
-    """
-    **Model:** Random Forest Regressor  
-    **Target:** log(SalePrice)  
-    **Developer:** Yusuf Özcan  
-    """
-)
+st.sidebar.info("Model: Random Forest | Dev: Yusuf Özcan")

@@ -1,78 +1,113 @@
 import pandas as pd
 import numpy as np
+import joblib
+import os
+
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-import joblib
-import os
 
-# 1. Load data
-print("Loading data...")
-df = pd.read_csv('nyc_housing_base.csv')
+# =========================
+# 1. LOAD DATA
+# =========================
+df = pd.read_csv("nyc_housing_base.csv")
 
-# 2. Data Cleaning & Professional Filtering
-# Remove symbolic sales (family transfers etc.) to prevent model bias
-df = df[df['sale_price'] > 10000]
-# Drop rows with critical missing spatial data
-df = df.dropna(subset=['sale_price', 'latitude', 'longitude'])
+# =========================
+# 2. CLEAN REAL MARKET SALES
+# =========================
+df = df[
+    (df["sale_price"] > 200_000) &
+    (df["sale_price"] < df["sale_price"].quantile(0.98))
+]
 
-# 3. Advanced Feature Engineering
-# Create physical logic feature: Area per unit (helps identify luxury vs dense housing)
-# Clip at 5000 to prevent extreme outliers from dominating the Random Forest
-df['area_per_unit'] = (df['bldgarea'] / (df['unitsres'] + 1)).clip(upper=5000)
+df = df.dropna(subset=[
+    "sale_price", "bldgarea", "lotarea",
+    "latitude", "longitude"
+])
 
-# Convert categorical codes to string to ensure they are treated as Nominal, not Ordinal
-df['landuse'] = df['landuse'].astype(str)
-df['borough_y'] = df['borough_y'].astype(str)
+# =========================
+# 3. FEATURE ENGINEERING
+# =========================
+df["unitsres"] = df["unitsres"].clip(lower=1)
+df["area_per_unit"] = (df["bldgarea"] / df["unitsres"]).clip(upper=5000)
 
-# 4. Target Transformation (The "Pro" Move)
-# Log transformation handles the extreme price skewness in NYC real estate
-y = np.log1p(df['sale_price']) 
+# 🔑 CRITICAL FIX: spatial binning
+df["lat_bin"] = df["latitude"].round(3)
+df["lon_bin"] = df["longitude"].round(3)
 
-# 5. Feature Selection
-features = ['borough_y', 'lotarea', 'bldgarea', 'numfloors', 
-            'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit']
+df["borough_y"] = df["borough_y"].astype(str)
+df["landuse"] = df["landuse"].astype(str)
+
+# =========================
+# 4. TARGET
+# =========================
+y = np.log1p(df["sale_price"])
+
+features = [
+    "borough_y", "landuse",
+    "lotarea", "bldgarea", "numfloors",
+    "unitsres", "building_age",
+    "area_per_unit", "lat_bin", "lon_bin"
+]
+
 X = df[features]
 
-# 6. Pipeline Construction
-numeric_features = ['lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'latitude', 'longitude', 'area_per_unit']
-categorical_features = ['borough_y', 'landuse']
+# =========================
+# 5. PIPELINE
+# =========================
+numeric_features = [
+    "lotarea", "bldgarea", "numfloors",
+    "unitsres", "building_age",
+    "area_per_unit", "lat_bin", "lon_bin"
+]
 
-numeric_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='median'))
+categorical_features = ["borough_y", "landuse"]
+
+numeric_transformer = Pipeline([
+    ("imputer", SimpleImputer(strategy="median"))
 ])
 
-categorical_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='most_frequent')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore'))
+categorical_transformer = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
 ])
 
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numeric_transformer, numeric_features),
-        ('cat', categorical_transformer, categorical_features)
-    ])
-
-# 7. Model Training (Optimized for Performance)
-model_pipeline = Pipeline(steps=[
-    ('preprocessor', preprocessor),
-    ('regressor', RandomForestRegressor(n_estimators=200, max_depth=20, random_state=42, n_jobs=-1))
+preprocessor = ColumnTransformer([
+    ("num", numeric_transformer, numeric_features),
+    ("cat", categorical_transformer, categorical_features)
 ])
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+model = RandomForestRegressor(
+    n_estimators=300,
+    max_depth=20,
+    min_samples_leaf=5,
+    random_state=42,
+    n_jobs=-1
+)
 
-print("Training Advanced NYC Model (Log-Scale)...")
-model_pipeline.fit(X_train, y_train)
+pipeline = Pipeline([
+    ("prep", preprocessor),
+    ("rf", model)
+])
 
-# Note: Score is calculated on the log-transformed target
-print(f"Model Training Complete. Log-Scale R2 Score: {model_pipeline.score(X_test, y_test):.4f}")
+# =========================
+# 6. TRAIN
+# =========================
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
 
-# 8. Save Model
-if not os.path.exists('models'): 
-    os.makedirs('models')
+pipeline.fit(X_train, y_train)
 
-joblib.dump(model_pipeline, 'models/nyc_house_model.pkl')
-print("Final model saved successfully in models/nyc_house_model.pkl")
+print("R2 (log-space):", pipeline.score(X_test, y_test))
+
+# =========================
+# 7. SAVE
+# =========================
+os.makedirs("models", exist_ok=True)
+joblib.dump(pipeline, "models/nyc_house_model.pkl")
+
+print("✅ Model saved: models/nyc_house_model.pkl")

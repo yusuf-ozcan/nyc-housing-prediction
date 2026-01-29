@@ -3,125 +3,89 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-import zipfile
 
-# =====================================================
-# 1. PAGE CONFIG
-# =====================================================
-st.set_page_config(
-    page_title="NYC AI Market Value Estimator",
-    layout="wide",
-    page_icon="🏙️"
-)
+# =========================
+# PAGE
+# =========================
+st.set_page_config("NYC AI Market Value Estimator", "🏙️", layout="wide")
 
-# =====================================================
-# 2. LOAD MODEL
-# =====================================================
 @st.cache_resource
-def load_trained_model():
-    zip_path = "models/nyc_house_model.pkl.zip"
-    model_path = "models/nyc_house_model.pkl"
+def load_model():
+    return joblib.load("models/nyc_house_model.pkl")
 
-    os.makedirs("models", exist_ok=True)
+model = load_model()
 
-    if not os.path.exists(model_path):
-        if not os.path.exists(zip_path):
-            st.error("❌ Model file not found.")
-            st.stop()
-        try:
-            with zipfile.ZipFile(zip_path, "r") as z:
-                z.extractall("models")
-        except Exception as e:
-            st.error(f"Zip extraction failed: {e}")
-            st.stop()
-
-    try:
-        return joblib.load(model_path)
-    except Exception as e:
-        st.error(f"Model loading failed: {e}")
-        st.stop()
-
-model = load_trained_model()
-
-# =====================================================
-# 3. UI
-# =====================================================
-BOROUGH_MAP = {
-    "Manhattan": {"lat": 40.7580, "lon": -73.9855, "code": "MN"},
-    "Brooklyn": {"lat": 40.6782, "lon": -73.9442, "code": "BK"},
-    "Queens": {"lat": 40.7282, "lon": -73.7949, "code": "QN"},
-    "Bronx": {"lat": 40.8448, "lon": -73.8648, "code": "BX"},
-    "Staten Island": {"lat": 40.5795, "lon": -74.1502, "code": "SI"}
+# =========================
+# BOROUGHS
+# =========================
+BOROUGHS = {
+    "Manhattan": ("MN", 40.7580, -73.9855),
+    "Brooklyn": ("BK", 40.6782, -73.9442),
+    "Queens": ("QN", 40.7282, -73.7949),
+    "Bronx": ("BX", 40.8448, -73.8648),
+    "Staten Island": ("SI", 40.5795, -74.1502),
 }
 
 st.title("🏙️ NYC AI Market Value Estimator")
-st.caption("AI-powered real estate valuation using NYC Open Data")
 st.divider()
 
-col1, col2 = st.columns(2)
+c1, c2 = st.columns(2)
 
-with col1:
-    borough = st.selectbox("Borough", BOROUGH_MAP.keys())
-    b_code = BOROUGH_MAP[borough]["code"]
-    lat = st.number_input("Latitude", value=BOROUGH_MAP[borough]["lat"], format="%.5f")
-    lon = st.number_input("Longitude", value=BOROUGH_MAP[borough]["lon"], format="%.5f")
-    land_use = st.selectbox("Land Use", [1, 2, 3, 4], 
-                            format_func=lambda x: {1: "Res (1-Family)", 2: "Res (Multi)", 3: "Mixed", 4: "Comm"}[x])
+with c1:
+    borough = st.selectbox("Borough", BOROUGHS.keys())
+    b_code, lat, lon = BOROUGHS[borough]
 
-with col2:
-    bldg_area = st.number_input("Building Area (sqft)", 300, 300000, 2200)
-    lot_area = st.number_input("Lot Area (sqft)", 200, 300000, 2500)
-    units = st.number_input("Residential Units", 0, 500, 1)
-    floors = st.slider("Number of Floors", 1, 120, 2)
-    age = st.slider("Building Age (Years)", 0, 300, 45)
+    landuse_map = {
+        "Single Family": "1",
+        "Multi Family": "2",
+        "Commercial / Mixed": "4"
+    }
+    landuse = st.selectbox("Property Type", landuse_map.keys())
 
-# =====================================================
-# 4. FEATURE ENGINEERING
-# =====================================================
-safe_units = max(units, 1)
-area_per_unit = bldg_area / safe_units
-area_per_unit = min(area_per_unit, 8000)
+with c2:
+    bldgarea = st.number_input("Building Area (sqft)", 300, 150000, 2200)
+    lotarea = st.number_input("Lot Area (sqft)", 200, 150000, 2500)
+    units = st.number_input("Units", 1, 200, 1)
+    floors = st.slider("Floors", 1, 80, 2)
+    age = st.slider("Building Age", 0, 150, 40)
 
-# =====================================================
-# 5. PREDICTION
-# =====================================================
+# =========================
+# PREDICTION
+# =========================
 st.divider()
 
-if st.button("🚀 Calculate Estimated Value", type="primary"):
-    try:
-        X = pd.DataFrame([{
-            "borough_y": b_code,
-            "lotarea": float(lot_area),
-            "bldgarea": float(bldg_area),
-            "numfloors": float(floors),
-            "unitsres": float(units),
-            "building_age": float(age),
-            "landuse": int(land_use),
-            "latitude": float(lat),
-            "longitude": float(lon),
-            "area_per_unit": float(area_per_unit)
-        }])
+if st.button("🚀 Calculate Value", type="primary"):
+    units = max(units, 1)
+    area_per_unit = min(bldgarea / units, 5000)
 
-        log_pred = model.predict(X)[0]
+    X = pd.DataFrame([{
+        "borough_y": b_code,
+        "landuse": landuse_map[landuse],
+        "lotarea": lotarea,
+        "bldgarea": bldgarea,
+        "numfloors": floors,
+        "unitsres": units,
+        "building_age": age,
+        "area_per_unit": area_per_unit,
+        "lat_bin": round(lat, 3),
+        "lon_bin": round(lon, 3)
+    }])
 
-        # Sınırlandırma (Clamping): Log değerini NYC gerçeklerine çekiyoruz
-        # log(200M) yaklaşık 19.1'dir. log_pred 20 üzerindeyse model saçmalıyor demektir.
-        if log_pred > 20:
-            log_pred = 19.1 + (log_pred % 1) # Gerçekçi bir üst sınıra çek
-            st.warning("⚠️ Property exceeds typical model range. Applying high-value normalization.")
+    log_price = float(model.predict(X)[0])
 
-        price = np.expm1(log_pred)
+    # 🔒 HARD DOMAIN CLAMP (NYC REALITY)
+    log_price = np.clip(log_price, 11.5, 17.7)
 
-        if np.isnan(price) or np.isinf(price):
-            st.error("⚠️ Mathematical error in prediction. Try reducing 'Building Area'.")
-        else:
-            st.success(f"### 💰 Estimated Market Value: ${price:,.0f}")
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Price per SqFt", f"${price / max(bldg_area, 1):,.0f}")
-            c2.metric("Efficiency Ratio", f"{area_per_unit:,.0f} sqft/unit")
+    price = np.expm1(log_price)
 
-    except Exception as e:
-        st.error(f"Prediction failed: {e}")
+    # Final sanity
+    if price / bldgarea > 4000:
+        price = bldgarea * 2500
 
-st.sidebar.info("Model: Random Forest | Dev: Yusuf Özcan")
+    st.success(f"### 💰 Estimated Market Value: ${price:,.0f}")
+
+    m1, m2 = st.columns(2)
+    m1.metric("Price per SqFt", f"${price/bldgarea:,.0f}")
+    m2.metric("Confidence (log)", f"{log_price:.2f}")
+
+    st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=12)

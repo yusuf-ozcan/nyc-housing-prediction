@@ -15,21 +15,16 @@ st.set_page_config(
 # --- 2. LOAD PRE-TRAINED ZIPPED MODEL ---
 @st.cache_resource
 def load_trained_model():
-    # Dosya yollarını tanımlıyoruz
     zip_path = 'models/nyc_house_model.pkl.zip'
     model_path = 'models/nyc_house_model.pkl'
     
-    # models klasörü yoksa oluştur
     if not os.path.exists('models'):
         os.makedirs('models')
     
-    # Eğer .pkl dosyası henüz çıkarılmamışsa zip'ten çıkar
     if not os.path.exists(model_path):
         if os.path.exists(zip_path):
             try:
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    # Bazı sistemlerde zip içindeki klasör yapısı sorun olabiliyor, 
-                    # dosyayı doğrudan models içine çıkarıyoruz.
                     zip_ref.extractall('models')
             except Exception as e:
                 st.error(f"Zip extraction failed: {e}")
@@ -38,7 +33,6 @@ def load_trained_model():
             st.error(f"⚠️ Critical Error: '{zip_path}' not found on GitHub!")
             st.stop()
     
-    # Modeli yüklerken hata kontrolü (Versiyon uyumsuzluğu için)
     try:
         return joblib.load(model_path)
     except Exception as e:
@@ -46,7 +40,6 @@ def load_trained_model():
         st.info("Tip: Ensure scikit-learn version matches your local environment (1.5.1).")
         st.stop()
 
-# Modeli hafızaya yükle
 model = load_trained_model()
 
 # --- 3. UI DESIGN ---
@@ -59,7 +52,7 @@ BOROUGH_MAP = {
 }
 
 st.title("🏙️ NYC AI Market Value Estimator")
-st.markdown("Professional Real estate valuation based on NYC Open Data and High-Performance Random Forest.")
+st.markdown("Professional real estate valuation based on NYC Open Data and High-Performance Random Forest.")
 st.divider()
 
 col1, col2 = st.columns([1, 1])
@@ -81,8 +74,8 @@ with col1:
 
 with col2:
     st.subheader("🏗️ Structural Specifications")
-    bldg_area = st.number_input("Building Area (sqft)", value=2200, min_value=10)
-    lot_area = st.number_input("Lot Area (sqft)", value=2500, min_value=10)
+    bldg_area = st.number_input("Building Area (sqft)", value=2200, min_value=1)
+    lot_area = st.number_input("Lot Area (sqft)", value=2500, min_value=1)
     
     min_u = 1 if land_use in [1, 2] else 0
     units = st.number_input("Residential Units", min_value=min_u, value=max(1, min_u))
@@ -90,38 +83,55 @@ with col2:
     floors = st.slider("Number of Floors", 1, 120, 2)
     age = st.slider("Building Age (Years)", 0, 250, 45)
 
-# Inference Logic (Preprocessing on input)
-area_per_unit = bldg_area / (units + 1)
+# --- 4. INFERENCE LOGIC ---
+# Bölme hatasını önlemek için güvenli unit sayısı
+safe_units = float(units) if units > 0 else 1.0
+area_per_unit = float(bldg_area) / safe_units
 area_per_unit_clipped = min(area_per_unit, 5000.0)
 
 st.divider()
 
 if st.button("🚀 Calculate Estimated Value", type="primary"):
     try:
-        # Prepare input data
+        # Modelin beklediği formatta veri seti hazırlama
         input_data = pd.DataFrame([[
-            b_code, lot_area, bldg_area, floors, units, age, str(float(land_use)), u_lat, u_lon, area_per_unit_clipped
+            str(b_code), 
+            float(lot_area), 
+            float(bldg_area), 
+            float(floors), 
+            float(units), 
+            float(age), 
+            str(float(land_use)), 
+            float(u_lat), 
+            float(u_lon), 
+            float(area_per_unit_clipped)
         ]], columns=['borough_y', 'lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit'])
         
-        # Predict
+        # Tahmin ve Log dönüşümünü geri alma (np.expm1)
         log_pred = model.predict(input_data)[0]
         final_price = np.expm1(log_pred)
         
-        # Success Display
-        st.success(f"### Estimated Market Value: ${final_price:,.2f}")
-        
-        res_col1, res_col2 = st.columns(2)
-        res_col1.metric("Price per SqFt", f"${(final_price/bldg_area):,.2f}")
-        res_col2.metric("Efficiency Ratio", f"{area_per_unit_clipped:.0f} sqft/unit")
+        # Geçersiz değer (Sonsuzluk veya NaN) kontrolü
+        if np.isinf(final_price) or np.isnan(final_price):
+            st.error("⚠️ Prediction resulted in an invalid value. Please check your structural inputs (Area/Units).")
+        else:
+            st.success(f"### Estimated Market Value: ${final_price:,.2f}")
+            
+            res_col1, res_col2 = st.columns(2)
+            
+            # Fiyat/Metrekare hesaplamasında 0'a bölme kontrolü
+            price_per_sqft = final_price / bldg_area if bldg_area > 0 else 0
+            res_col1.metric("Price per SqFt", f"${price_per_sqft:,.2f}")
+            res_col2.metric("Efficiency Ratio", f"{area_per_unit_clipped:.0f} sqft/unit")
         
     except Exception as e:
         st.error(f"Prediction error: {e}")
-        st.info("Check if your input features match the training dataset structure.")
+        st.info("Ensure your input features match the model's training schema.")
 
 st.sidebar.markdown("### ℹ️ Model Insights")
 st.sidebar.info(f"""
-- **Algorithm:** High-Precision Random Forest
-- **Scikit-learn Version:** 1.5.1
-- **Optimization:** Log-Scaled Target
+- **Algorithm:** Random Forest Regressor
+- **Optimization:** Log-Scaled Target (np.log1p)
+- **Feature Engineering:** Area Efficiency Ratio Included
 - **Portfolio:** [yusufozcan.space](https://yusufozcan.space)
 """)

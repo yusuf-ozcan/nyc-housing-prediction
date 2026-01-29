@@ -84,16 +84,17 @@ with col2:
     age = st.slider("Building Age (Years)", 0, 250, 45)
 
 # --- 4. INFERENCE LOGIC ---
-# Bölme hatasını önlemek için güvenli unit sayısı
+# Sıfıra bölme ve inf hatalarını önlemek için güvenli alan hesabı
 safe_units = float(units) if units > 0 else 1.0
 area_per_unit = float(bldg_area) / safe_units
+# Aşırı yüksek değerleri modelin eğitildiği makul sınırda (5000) tutuyoruz
 area_per_unit_clipped = min(area_per_unit, 5000.0)
 
 st.divider()
 
 if st.button("🚀 Calculate Estimated Value", type="primary"):
     try:
-        # Modelin beklediği formatta veri seti hazırlama
+        # Girdileri modelin beklediği DataFrame formatına dönüştür
         input_data = pd.DataFrame([[
             str(b_code), 
             float(lot_area), 
@@ -107,31 +108,32 @@ if st.button("🚀 Calculate Estimated Value", type="primary"):
             float(area_per_unit_clipped)
         ]], columns=['borough_y', 'lotarea', 'bldgarea', 'numfloors', 'unitsres', 'building_age', 'landuse', 'latitude', 'longitude', 'area_per_unit'])
         
-        # Tahmin ve Log dönüşümünü geri alma (np.expm1)
+        # Model tahmini (Logaritmik sonuç döner)
         log_pred = model.predict(input_data)[0]
+        
+        # Logaritmik sonucu gerçek fiyat değerine çevir (np.expm1)
         final_price = np.expm1(log_pred)
         
-        # Geçersiz değer (Sonsuzluk veya NaN) kontrolü
-        if np.isinf(final_price) or np.isnan(final_price):
-            st.error("⚠️ Prediction resulted in an invalid value. Please check your structural inputs (Area/Units).")
+        # Görselde aldığın "invalid value" hatasını önlemek için kontrol
+        if np.isinf(final_price) or np.isnan(final_price) or final_price > 1e12:
+            st.warning("⚠️ Prediction resulted in an unusually high or invalid value. Please ensure 'Building Area' and 'Residential Units' are realistic.")
         else:
             st.success(f"### Estimated Market Value: ${final_price:,.2f}")
             
             res_col1, res_col2 = st.columns(2)
             
-            # Fiyat/Metrekare hesaplamasında 0'a bölme kontrolü
+            # Price per SqFt hesaplamasında sıfıra bölme kontrolü
             price_per_sqft = final_price / bldg_area if bldg_area > 0 else 0
             res_col1.metric("Price per SqFt", f"${price_per_sqft:,.2f}")
             res_col2.metric("Efficiency Ratio", f"{area_per_unit_clipped:.0f} sqft/unit")
         
     except Exception as e:
-        st.error(f"Prediction error: {e}")
-        st.info("Ensure your input features match the model's training schema.")
+        st.error(f"An error occurred during prediction: {e}")
 
 st.sidebar.markdown("### ℹ️ Model Insights")
 st.sidebar.info(f"""
 - **Algorithm:** Random Forest Regressor
-- **Optimization:** Log-Scaled Target (np.log1p)
-- **Feature Engineering:** Area Efficiency Ratio Included
+- **Target:** Log-Transformed Market Value
+- **Developer:** Yusuf Özcan
 - **Portfolio:** [yusufozcan.space](https://yusufozcan.space)
 """)
